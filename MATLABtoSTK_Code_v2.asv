@@ -1,0 +1,120 @@
+% Ravi teja Nallapu
+% Feb 7,2018
+
+%% Eliminate influence of any previous code
+close all
+clear all
+clc
+%% Plot formatters
+lw = 2;
+fs = 18;
+
+%% Propagation parameters
+step_size = 1; % Second
+
+%% Start STK
+app = actxserver('STK11.Application');
+% app.UserControl = 1;
+root = app.Personality2;
+Scenario = root.Children.New('eScenario','MDA_Simulations');
+root.UnitPreferences.Item('DateFormat').SetCurrentUnit('UTCG');
+%% Scenario Time
+Scenario.SetTimePeriod('26 Feb 2020 12:00:00.000','27 Feb 2020 12:00:00.000'); %% Set detection time for 1 day
+root.ExecuteCommand('Animate * Reset');
+root.ExecuteCommand('VO * Declutter Enable On');
+
+%% Create Launch Site
+% White Sands, NM
+Fac_lat =32.564;
+Fac_lon = -106.359;
+Fac_alt = 0;
+Facility = Scenario.Children.New('eFacility', 'WhiteSands');
+Facility.Position.AssignGeodetic(Fac_lat, Fac_lon, Fac_alt);
+Facility.UseTerrain = true;
+Facility.SetAzElMask('eTerrainData',0);
+
+%% Create Target Site
+% Pacific Ocean
+Tar_lat = -8.7832;
+Tar_lon = -124.5085;
+Tar_alt = 0;
+Target = Scenario.Children.New('eTarget','PacificOcean');
+Target.Position.AssignGeodetic(Tar_lat,Tar_lon,Tar_alt);
+Target.UseTerrain = true;
+Target.SetAzElMask('eTerrainData',0);
+
+%% Create Detection sateillite
+TOF = 3000; % Time of flight in seconds
+Missile = Scenario.Children.New('eMissile','Threat');
+root.ExecuteCommand(['Missile */Missile/Threat Trajectory "', Scenario.StartTime,'"' , num2str(step_size),' LnLatGeod ',num2str(Fac_lat),' ',num2str(Fac_lon), ' ',num2str(Fac_alt),' TOF ' num2str(TOF),' ImLatGeod ',num2str(Tar_lat),' ',num2str(Tar_lon), ' ',num2str(Tar_alt)]); % Propagate every 1 seconds
+%disp(['Missile */Missile/Threat Trajectory "', Scenario.StartTime,'" 1.0 LnLatGeod ',num2str(Fac_lat),' ',num2str(Fac_lon), ' ',num2str(Fac_alt),' TOF ' num2str(TOF),' ImLatGeod ',num2str(Tar_lat),' ',num2str(Tar_lon), ' ',num2str(Tar_alt)])
+%% SWIMSat objects
+count = 5; % Number of unknown object you need
+for j = 1:1:count % 
+    
+    a_u(j)    = 6787233.71; % Semi-major axis 
+    e_u(j)    = 0.0008787;  % Eccentricity       
+    i_u(j)    = 51.34474;   % Inclination in 0 to 180
+    wp_u(j)   = 54.44526;   % Argument of perigee
+    RAAN_u(j) = 304.51644;  % RAAN
+    TA_u(j)   = (j-1)*360/count;
+    
+   sat_name = ['SWIMSat-',num2str(j)];
+   sen_name = ['Camera-',num2str(j)];
+   Satellite(j) = Scenario.Children.New('eSatellite', sat_name);
+   sensor = Satellite(j).Children.New('eSensor', sen_name);
+   pattern1 = sensor.Pattern;
+   pattern1.ConeAngle = 1;
+
+   sensor.SetPointingType('eSnPtTargeted');
+   pointing1 = sensor.Pointing;
+   pointing1.Targets.AddObject(Missile); 
+  
+   crea_com_1 = ['SetState */Satellite/',sat_name,' Classical TwoBody "'];
+   crea_com_2 = [Scenario.StartTime, '" "',Scenario.StopTime,'"', num2str(step_size),' ICRF "', Scenario.StartTime];
+   crea_com_3= ['" ',num2str(a_u(j)),' ',num2str(e_u(j)),' ',num2str(i_u(j)),' ',num2str(wp_u(j)),' ',num2str(RAAN_u(j)),' ',num2str(TA_u(j))];
+   com_test = [crea_com_1 crea_com_2 crea_com_3]; 
+   disp(com_test)
+   %% Propagate
+   root.ExecuteCommand(com_test);
+   Taccess(j) = Satellite(j).GetAccessToObject(Missile);
+   Taccess(j).ComputeAccess;
+   %% Set attitude target
+   root.ExecuteCommand(['SetAttitude */Satellite/',sat_name,' Target ADD Missile/Threat']);
+end
+
+   %% Data extraction
+root.UnitPreferences.Item('DateFormat').SetCurrentUnit('EpSec');
+
+d = 0;
+for i = 1:1:count
+      TaccessDP1_0test = Taccess(i).DataProviders.Item(['Access Data']).Exec(Scenario.StartTime,Scenario.StopTime);
+      HA(i) = TaccessDP1_0test.DataSets.Count;
+      if HA(i)>0
+         d = d+1; 
+         SWIM_no(d) = i; 
+         TStr(d) =(TaccessDP1_0test.DataSets.GetDataSetByName('Start Time').GetValues);
+         TSto(d) = (TaccessDP1_0test.DataSets.GetDataSetByName('Stop Time').GetValues);
+      end
+end
+
+Tstr = cell2mat(TStr);
+Tsto = cell2mat(TSto);
+
+MissileDP = Missile.DataProviders.Item('Cartesian Position').Group.Item('Fixed').Exec(Scenario.StartTime,Scenario.StopTime,1);
+MX = cell2mat(MissileDP.DataSets.GetDataSetByName('x').GetValues);
+MY = cell2mat(MissileDP.DataSets.GetDataSetByName('y').GetValues);
+MZ = cell2mat(MissileDP.DataSets.GetDataSetByName('z').GetValues);
+Mt = cell2mat(MissileDP.DataSets.GetDataSetByName('Time').GetValues);
+
+figure(1)
+plot3(MX,MY,MZ,'LineWidth',lw,'DisplayName','Missile trajectory')
+hold on
+for j = 1:1:d
+plot3(MX(Tstr(j):Tsto(j)),MY(Tstr(j):Tsto(j)),MZ(Tstr(j):Tsto(j)),'LineWidth',lw,'DisplayName',['SWIMSat-',num2str(j)])
+end
+xlabel('Inertial X');
+ylabel('Inertial Y');
+zlabel('Inertial Z');
+legend('show')
+set(gca,'fontsize',fs,'FontWeight','bold')
